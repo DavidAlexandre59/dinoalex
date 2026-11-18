@@ -1,0 +1,338 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f7f7f7">
+<title>RUN! - Le jeu sans fin</title>
+<style>
+:root{color-scheme:light;--ink:#242424;--muted:#777;--line:#dedede}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;min-height:100%;background:#f7f7f7;color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+body{min-height:100svh;display:flex;align-items:center;justify-content:center;padding:clamp(10px,3vw,28px)}
+.app{width:min(100%,1000px)}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 2px 14px}
+.brand{display:flex;align-items:center;gap:10px}
+.logo{width:38px;height:38px;border-radius:12px;background:#242424;color:white;display:grid;place-items:center;font-weight:900;font-size:20px}
+h1{margin:0;font-size:clamp(19px,4vw,25px)}
+.sub{color:var(--muted);font-size:12px;margin-top:2px}
+.scores{display:flex;gap:8px}
+.scorebox{min-width:84px;padding:7px 11px;border:1px solid var(--line);border-radius:12px;background:#fff;text-align:right}
+.scorebox small{display:block;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:1px}
+.scorebox strong{font-variant-numeric:tabular-nums;font-size:18px}
+.game-wrap{position:relative;background:#fff;border:1px solid #e6e6e6;border-radius:18px;overflow:hidden;box-shadow:0 12px 40px #0000000a}
+canvas{display:block;width:100%;height:clamp(230px,43vw,360px);touch-action:pan-y}
+.overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;background:#ffffffc9;backdrop-filter:blur(3px)}
+.overlay.hidden{display:none}
+.modal{max-width:340px}
+.modal h2{font-size:clamp(24px,5vw,34px);margin:0 0 7px}
+.modal p{color:#666;font-size:14px;line-height:1.5;margin:0 0 17px}
+button{border:0;border-radius:12px;background:#242424;color:#fff;font:700 14px system-ui;padding:12px 22px;min-height:46px;cursor:pointer;touch-action:manipulation}
+button:active{transform:translateY(1px)}
+.controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:13px}
+.hint{color:#777;font-size:12px;line-height:1.5}
+.actions{display:flex;gap:8px}
+.secondary{background:#ececec;color:#333;padding:10px 14px;min-height:40px}
+.mobile-jump{display:none}
+footer{text-align:center;color:#999;font-size:11px;margin-top:15px}
+@media(max-width:600px){
+body{padding:12px;align-items:flex-start;padding-top:max(12px,env(safe-area-inset-top))}
+header{align-items:flex-start}
+.scores{gap:5px}
+.scorebox{min-width:67px;padding:6px 8px}
+.scorebox strong{font-size:16px}
+.sub{max-width:150px}
+canvas{height:min(55svh,310px);min-height:220px}
+.controls{align-items:stretch}
+.hint{max-width:52%;font-size:11px}
+.mobile-jump{display:block;min-width:112px}
+.actions .secondary{display:none}
+}
+</style>
+</head>
+<body>
+<main class="app">
+<header>
+<div class="brand">
+<div class="logo">R</div>
+<div>
+<h1>RUN! <span style="font-weight:400;color:#888">/ sans fin</span></h1>
+<div class="sub">Un petit sprint, une grande aventure.</div>
+</div>
+</div>
+<div class="scores" aria-live="polite">
+<div class="scorebox"><small>SCORE</small><strong id="score">00000</strong></div>
+<div class="scorebox"><small>RECORD</small><strong id="best">00000</strong></div>
+</div>
+</header>
+
+<section class="game-wrap" aria-label="Zone de jeu">
+<canvas id="game" aria-label="Jeu de course sans fin"></canvas>
+<div class="overlay" id="overlay">
+<div class="modal">
+<h2 id="overlayTitle">Prêt à courir ?</h2>
+<p id="overlayText">Évite les obstacles et tiens le plus longtemps possible. Touche l’écran ou appuie sur Espace pour sauter.</p>
+<button id="startBtn">JOUER</button>
+</div>
+</div>
+</section>
+
+<div class="controls">
+<div class="hint">📱 Touche l’écran pour sauter<br>⌨️ Espace · ↑ · clic</div>
+<div class="actions">
+<button class="secondary" id="pauseBtn">Pause</button>
+<button class="mobile-jump" id="jumpBtn">SAUTER ↑</button>
+</div>
+</div>
+<footer>RUN! fonctionne sans connexion. Ton record reste sauvegardé sur cet appareil.</footer>
+</main>
+
+<script>
+(() => {
+"use strict";
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d",{alpha:false});
+const scoreEl=document.getElementById("score");
+const bestEl=document.getElementById("best");
+const overlay=document.getElementById("overlay");
+const overlayTitle=document.getElementById("overlayTitle");
+const overlayText=document.getElementById("overlayText");
+const startBtn=document.getElementById("startBtn");
+const pauseBtn=document.getElementById("pauseBtn");
+const jumpBtn=document.getElementById("jumpBtn");
+
+const BEST_KEY="run-infinite-best-v1";
+let best=safeGetBest();
+let state="ready";
+let width=800,height=300,dpr=1,groundY=230;
+let lastTime=0,elapsed=0,score=0,speed=330,spawnTimer=0;
+let obstacles=[],particles=[],clouds=[];
+let groundOffset=0;
+let player={x:72,y:0,w:34,h:42,vy:0,grounded:true,frame:0};
+
+const gravity=1900;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+function safeGetBest(){
+try{return Number(localStorage.getItem(BEST_KEY))||0}
+catch(e){return 0}
+}
+function saveBest(){
+try{localStorage.setItem(BEST_KEY,String(best))}
+catch(e){}
+}
+function fmt(n){return String(Math.floor(n)).padStart(5,"0")}
+bestEl.textContent=fmt(best);
+
+function resize(){
+const rect=canvas.getBoundingClientRect();
+const oldGround=groundY;
+width=Math.max(320,rect.width);
+height=Math.max(220,rect.height);
+dpr=Math.min(window.devicePixelRatio||1,2);
+canvas.width=Math.round(width*dpr);
+canvas.height=Math.round(height*dpr);
+ctx.setTransform(dpr,0,0,dpr,0,0);
+groundY=height*.76;
+player.x=clamp(width*.105,42,92);
+if(state!=="running"||player.grounded)player.y=groundY-player.h;
+else player.y+=groundY-oldGround;
+if(!clouds.length){
+for(let i=0;i<5;i++)clouds.push({x:rand(0,width),y:rand(25,height*.42),s:rand(.65,1.2)});
+}
+draw();
+}
+window.addEventListener("resize",resize,{passive:true});
+
+function reset(){
+elapsed=0;score=0;speed=330;spawnTimer=.8;groundOffset=0;
+obstacles=[];particles=[];
+player.y=groundY-player.h;player.vy=0;player.grounded=true;player.frame=0;
+scoreEl.textContent=fmt(0);
+}
+function start(){
+reset();state="running";lastTime=performance.now();
+overlay.classList.add("hidden");pauseBtn.textContent="Pause";
+}
+function showOverlay(title,text,button){
+overlayTitle.textContent=title;
+overlayText.textContent=text;
+startBtn.textContent=button;
+overlay.classList.remove("hidden");
+}
+function jump(){
+if(state==="ready"||state==="over"){start();return}
+if(state==="paused"){resume();return}
+if(state!=="running"||!player.grounded)return;
+player.vy=-690;player.grounded=false;
+for(let i=0;i<5;i++)particles.push({x:player.x+8,y:groundY-3,vx:rand(-75,25),vy:rand(-90,-15),life:rand(.18,.35)});
+}
+function pause(){
+if(state!=="running")return;
+state="paused";
+showOverlay("Pause","La course est arrêtée. Reprends quand tu es prêt.","REPRENDRE");
+pauseBtn.textContent="Reprendre";
+}
+function resume(){
+if(state!=="paused")return;
+state="running";overlay.classList.add("hidden");
+lastTime=performance.now();pauseBtn.textContent="Pause";
+}
+function endGame(){
+state="over";
+const finalScore=Math.floor(score);
+if(finalScore>best){best=finalScore;saveBest();bestEl.textContent=fmt(best)}
+showOverlay("Course terminée !",`Score : ${fmt(finalScore)} · Record : ${fmt(best)}. Une autre tentative ?`,"REJOUER");
+}
+function spawnObstacle(){
+const tall=Math.random()<.28;
+const w=tall?rand(22,30):rand(18,27);
+const h=tall?rand(48,66):rand(28,43);
+obstacles.push({x:width+20,y:groundY-h,w,h,type:tall?"tall":"low",passed:false});
+if(Math.random()<.16&&score>250){
+const gap=rand(105,145);
+obstacles.push({x:width+20+gap,y:groundY-rand(25,36),w:rand(18,23),h:rand(25,36),type:"low",passed:false});
+}
+}
+function roundedRect(c,x,y,w,h,r){
+c.beginPath();c.roundRect(x,y,w,h,r);c.fill();
+}
+function drawCloud(c){
+ctx.fillStyle="#eef0f0";
+ctx.beginPath();
+ctx.arc(c.x,c.y,13*c.s,0,Math.PI*2);
+ctx.arc(c.x+14*c.s,c.y-5*c.s,17*c.s,0,Math.PI*2);
+ctx.arc(c.x+31*c.s,c.y,12*c.s,0,Math.PI*2);
+ctx.fill();
+}
+function drawPlayer(){
+const x=player.x,y=player.y;
+const running=state==="running"&&player.grounded;
+const leg=Math.sin(player.frame*15)*5;
+ctx.fillStyle="#00000012";
+ctx.beginPath();
+ctx.ellipse(x+17,groundY+3,player.grounded?19:12,4,0,0,Math.PI*2);
+ctx.fill();
+ctx.fillStyle="#252a2b";
+roundedRect(ctx,x+7,y+12,23,25,7);
+roundedRect(ctx,x+12,y+1,20,19,7);
+ctx.fillStyle="#fff";ctx.fillRect(x+25,y+7,3,3);
+ctx.fillStyle="#e65f4b";roundedRect(ctx,x+8,y+16,23,5,2);
+ctx.strokeStyle="#252a2b";ctx.lineWidth=5;ctx.lineCap="round";
+ctx.beginPath();ctx.moveTo(x+10,y+22);ctx.lineTo(x+4,y+29+(running?-leg*.3:0));ctx.stroke();
+ctx.lineWidth=6;ctx.beginPath();
+if(running){
+ctx.moveTo(x+14,y+34);ctx.lineTo(x+11+leg,y+42);
+ctx.moveTo(x+25,y+34);ctx.lineTo(x+27-leg,y+42);
+}else{
+ctx.moveTo(x+14,y+34);ctx.lineTo(x+12,y+42);
+ctx.moveTo(x+25,y+34);ctx.lineTo(x+28,y+42);
+}
+ctx.stroke();
+}
+function drawObstacle(o){
+ctx.fillStyle="#438b70";
+if(o.type==="tall"){
+roundedRect(ctx,o.x+7,o.y,o.w-10,o.h,5);
+roundedRect(ctx,o.x,o.y+15,12,9,3);
+roundedRect(ctx,o.x+o.w-12,o.y+25,12,9,3);
+ctx.fillStyle="#2e705a";ctx.fillRect(o.x+10,o.y+8,3,12);
+}else{
+roundedRect(ctx,o.x+5,o.y+8,o.w-10,o.h-8,4);
+roundedRect(ctx,o.x,o.y+18,10,8,3);
+roundedRect(ctx,o.x+o.w-9,o.y+3,9,8,3);
+}
+}
+function draw(){
+ctx.fillStyle="#fff";ctx.fillRect(0,0,width,height);
+ctx.fillStyle="#fafbfa";ctx.fillRect(0,groundY-25,width,height-groundY+25);
+clouds.forEach(drawCloud);
+ctx.strokeStyle="#bfc5c2";ctx.lineWidth=2;
+ctx.beginPath();ctx.moveTo(0,groundY);ctx.lineTo(width,groundY);ctx.stroke();
+ctx.fillStyle="#d9dedb";
+for(let x=-(groundOffset%34);x<width;x+=34)ctx.fillRect(x,groundY+12,15,2);
+for(let x=-(groundOffset%115);x<width;x+=115){
+ctx.strokeStyle="#d1d8d4";ctx.lineWidth=2;ctx.beginPath();
+ctx.moveTo(x+4,groundY-1);ctx.lineTo(x+1,groundY-8);
+ctx.moveTo(x+4,groundY-1);ctx.lineTo(x+9,groundY-6);ctx.stroke();
+}
+obstacles.forEach(drawObstacle);drawPlayer();
+particles.forEach(p=>{
+ctx.globalAlpha=clamp(p.life/.35,0,1);
+ctx.fillStyle="#aeb8b2";ctx.fillRect(p.x,p.y,3,3);
+});
+ctx.globalAlpha=1;
+if(state==="running"&&score>0){
+ctx.fillStyle="#c4cbc7";ctx.font="11px system-ui";
+ctx.fillText("VITESSE "+Math.round(speed/3.3)+"%",width-94,22);
+}
+}
+function update(dt){
+if(state!=="running")return;
+elapsed+=dt;
+speed=Math.min(760,330+elapsed*10.5);
+score+=dt*(speed/10);
+scoreEl.textContent=fmt(score);
+groundOffset+=speed*dt;
+clouds.forEach(c=>{
+c.x-=speed*.12*dt;
+if(c.x<-55){c.x=width+40;c.y=rand(25,height*.42)}
+});
+if(!player.grounded){
+player.vy+=gravity*dt;player.y+=player.vy*dt;
+if(player.y>=groundY-player.h){
+player.y=groundY-player.h;player.vy=0;player.grounded=true;
+}
+}else player.frame+=dt;
+spawnTimer-=dt;
+if(spawnTimer<=0){
+spawnObstacle();
+const minGap=Math.max(.78,1.28-(speed-330)/900);
+spawnTimer=rand(minGap,minGap+.55);
+}
+obstacles.forEach(o=>o.x-=speed*dt);
+obstacles=obstacles.filter(o=>o.x+o.w>-10);
+const px=player.x+7,py=player.y+5,pw=player.w-12,ph=player.h-7;
+for(const o of obstacles){
+const ox=o.x+3,oy=o.y+3,ow=o.w-6,oh=o.h-4;
+if(px<ox+ow&&px+pw>ox&&py<oy+oh&&py+ph>oy){endGame();break}
+}
+particles.forEach(p=>{
+p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=380*dt;p.life-=dt;
+});
+particles=particles.filter(p=>p.life>0);
+}
+function loop(now){
+const dt=clamp((now-lastTime)/1000,0,.035);
+lastTime=now;
+update(dt);draw();
+requestAnimationFrame(loop);
+}
+function handleKey(e){
+if(["Space","ArrowUp","KeyW"].includes(e.code)){
+e.preventDefault();if(!e.repeat)jump();
+}
+if(e.code==="Escape"||e.code==="KeyP"){
+e.preventDefault();
+if(state==="running")pause();
+else if(state==="paused")resume();
+}
+}
+window.addEventListener("keydown",handleKey);
+canvas.addEventListener("pointerdown",e=>{e.preventDefault();jump()},{passive:false});
+jumpBtn.addEventListener("click",jump);
+startBtn.addEventListener("click",()=>state==="paused"?resume():start());
+pauseBtn.addEventListener("click",()=>state==="running"?pause():state==="paused"?resume():null);
+document.addEventListener("visibilitychange",()=>{
+if(document.hidden&&state==="running")pause();
+});
+resize();reset();
+lastTime=performance.now();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
